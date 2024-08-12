@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Fullscreen Quad with WebGL 2</title>
+    <style>
+        body { margin: 0; }
+        canvas { display: block; margin: 50px auto; }
+    </style>
+</head>
+<body>
+    <canvas id="webgl-canvas"></canvas>
+    <script>
+        const canvas = document.getElementById('webgl-canvas');
+        const gl = canvas.getContext('webgl2');
+        canvas.width = 512;
+        canvas.height = 200;
+
+        // Vertex Shader Source
+        const vertexShaderSource = `#version 300 es
+            in vec2 a_position;
+            in vec2 a_uv;
+            out vec2 vUv;
+            void main() {
+                gl_Position = vec4(a_position, 0.0, 1.0);
+                vUv = a_uv;
+            }
+        `;
+
+        // Fragment Shader Source
+        const fragmentShaderSource = `#version 300 es
+            precision highp float;
+            in vec2 vUv;
+            out vec4 outColor;
+            uniform sampler2D uTexture;
+            // Below units are in samples count, can be in other units (like pixels) as well
+            uniform float uWindow;
+            uniform float uSamples;
+            uniform float uOffset;
+
+            float smoothSample(vec2 uv, float e) 
+            {
+                float sum = 0.0;
+                for (float i = -1.0; i <= 1.0; i += 1.0) {
+                    sum += texture(uTexture, uv - vec2(e * i * 0.5, 0.0)).x;
+                }
+                return sum / 3.0;
+            }
+
+            float getWaveformDeriv(float x, float e)
+            {
+                return (smoothSample(vec2(x + e * 0.5, 0.), e)
+                       -smoothSample(vec2(x - e * 0.5, 0.), e)) / e;
+            }
+
+            void main() {
+                float ep = 1. / uSamples; // 1 index size
+                float index = vUv.x * (uWindow / uSamples) + (uOffset / uSamples); // Index in the texture/array
+         
+                float amp = 0.25; // Change to make waves heigher/lower
+                float height = amp * smoothSample(vec2(index, 0.), ep) * 0.5 + 0.5;
+                float heightderiv = amp * getWaveformDeriv(index, ep);
+
+                float base_width = 8.0;
+                float width = dot(vec2(base_width, abs(1.1 * heightderiv)) / uSamples, vec2(1., 1.));
+                float value = ((height-vUv.y)/width);
+                float v = abs(value);
+
+                v = clamp(0.0,v,1.0); // value of the current pixel
+
+                outColor = vec4(vec3(v), 1.);
+            }
+        `;
+
+        // Compile Shader Function
+        function compileShader(type, source) {
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                console.error('Shader compile error:', gl.getShaderInfoLog(shader));
+                gl.deleteShader(shader);
+                return null;
+            }
+            return shader;
+        }
+
+        // Create and Compile Shaders
+        const vertexShader = compileShader(gl.VERTEX_SHADER, vertexShaderSource);
+        const fragmentShader = compileShader(gl.FRAGMENT_SHADER, fragmentShaderSource);
+
+        // Create and Link Program
+        const program = gl.createProgram();
+        gl.attachShader(program, vertexShader);
+        gl.attachShader(program, fragmentShader);
+        gl.linkProgram(program);
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+            console.error('Program link error:', gl.getProgramInfoLog(program));
+            gl.deleteProgram(program);
+        }
+        gl.useProgram(program);
+
+        // Define Quad Vertices
+        const vertices = new Float32Array([
+            -1, -1,  0, 0,
+             1, -1,  1, 0,
+            -1,  1,  0, 1,
+             1,  1,  1, 1
+        ]);
+
+        // Create and Bind Vertex Array
+        const vertexArray = gl.createVertexArray();
+        gl.bindVertexArray(vertexArray);
+
+        // Create and Bind Buffer
+        const vertexBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+
+        // Get Attribute Locations
+        const positionLocation = gl.getAttribLocation(program, 'a_position');
+        const uvLocation = gl.getAttribLocation(program, 'a_uv');
+
+        // Setup Position Attribute
+        gl.enableVertexAttribArray(positionLocation);
+        gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 4 * 4, 0);
+
+        // Setup UV Attribute
+        gl.enableVertexAttribArray(uvLocation);
+        gl.vertexAttribPointer(uvLocation, 2, gl.FLOAT, false, 4 * 4, 2 * 4);
+
+        const numSamples = 2048;
+        const cycles = 10; // number of cycles
+        const frequency = 2 * Math.PI * cycles; // total angle for the specified number of cycles
+
+        // Create and Bind Texture
+        const samples = new Float32Array(numSamples);
+        for (let i = 0; i < numSamples; i++) {
+            samples[i] = Math.sin(i * frequency / numSamples);
+        }
+
+        const texture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16F, numSamples, 1, 0, gl.RED, gl.FLOAT, samples);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+        // Set Uniforms
+        const textureLocation = gl.getUniformLocation(program, 'u_texture');
+        gl.uniform1i(textureLocation, 0);
+
+        // Get uniform locations for window and samples
+        const windowLocation = gl.getUniformLocation(program, 'uWindow');
+        const samplesLocation = gl.getUniformLocation(program, 'uSamples');
+        const offsetLocation = gl.getUniformLocation(program, 'uOffset');
+
+        const sampleWindow = 1024; // Render half of the array at a time
+        let offset = 256;
+        gl.uniform1f(windowLocation, sampleWindow);
+        gl.uniform1f(samplesLocation, numSamples);
+        gl.uniform1f(offsetLocation, 256);
+
+        // Bind Texture Unit
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+
+        let direction = 1; // 1 for increasing, -1 for decreasing
+
+        function animate() {
+            // Update window value
+            offset += direction * 10; // Adjust the speed multiplier as needed
+            if (offset > 1024 || offset < 0) {
+                direction *= -1; // Reverse direction
+            }
+            gl.uniform1f(offsetLocation, offset);
+
+            // Set Viewport and Draw
+            gl.viewport(0, 0, canvas.width, canvas.height);
+            gl.clearColor(0, 0, 0, 1);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+            requestAnimationFrame(animate);
+        }
+
+        // Start the animation
+        animate();
+    </script>
+</body>
+</html>
