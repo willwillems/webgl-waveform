@@ -10,10 +10,21 @@
                 display: block;
                 margin: 50px auto;
             }
+            form {
+                display: block;
+                margin: 50px 120px;
+            }
         </style>
     </head>
     <body>
         <canvas id="webgl-canvas"></canvas>
+        <form id="settings">
+            <label>
+                Window Size
+                <input type="number" name="window" required />
+            </label>
+            <button type="submit">Submit</button>
+        </form>
         <script type="module">
             /** @type {HTMLCanvasElement} */
             const canvas = document.getElementById("webgl-canvas");
@@ -297,6 +308,15 @@
 
                 requestAnimationFrame(animate);
             }
+
+            const settingsForm = document.getElementById("settings");
+
+            settingsForm.elements["window"].value = sampleWindow;
+
+            settingsForm.addEventListener("submit", (e) => {
+                e.preventDefault();
+                sampleWindow = parseInt(e.target.window.value);
+            });
 
             // Start the animation
             animate();
