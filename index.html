@@ -17,7 +17,7 @@
         </style>
     </head>
     <body>
-        <canvas id="webgl-canvas" width="512px" height="200px"></canvas>
+        <canvas id="webgl-canvas" width="512px" height="96px"></canvas>
         <form id="settings">
             <label>
                 Window Size
@@ -29,7 +29,7 @@
             /** @type {HTMLCanvasElement} */
             const canvas = document.getElementById("webgl-canvas");
             /** @type {WebGL2RenderingContext} */
-            const gl = canvas.getContext("webgl2");
+            const gl = canvas.getContext("webgl2", { antialias: false });
 
             const width = canvas.clientWidth;
             const height = canvas.clientHeight;
@@ -63,50 +63,59 @@
                 uniform sampler2D uTexture; // this is the float 32 texture we're passing in
                 // Below units are in samples count, can be in other units (like pixels) as well
                 uniform int uWindow; // this is the window size
-                uniform int uSampleWidth;
-                uniform int uSampleHeight;
+                uniform int lod;
+                uniform int uTextureWidth;
                 uniform int uOffset; // this is the offset
 
                 uniform int uHeight; // this is the height in px
                 uniform int uWidth; // this is the width in px
 
-                // float smoothSample(vec2 uv, float e)
-                // {
-                //     // return texture(uTexture, uv).x;
+                float smoothSample(vec2 uv, float e)
+                {
+                    // return texture(uTexture, uv).x;
 
-                //     float sum = 0.0;
-                //     for (float i = -1.0; i <= 1.0; i += 1.0) {
-                //         sum += texture(uTexture, uv - vec2(e * i * 0.5, 0.0)).x;
-                //     }
-                //     return sum / 3.0;
-                // }
+                    float sum = 0.0;
+                    for (float i = -1.0; i <= 1.0; i += 1.0) {
+                        sum += texture(uTexture, uv - vec2(e * i * 0.5, 0.0)).x;
+                    }
+                    return sum / 3.0;
+                }
+
+                float inclusiveStep(float edge, float x) {
+                    return 1.0 - step(x, edge);
+                }
 
                 float interStep(float min, float max, float value)
                 {
-                    return step(min, value) * step(value, max);
+                    return inclusiveStep(min, value) * inclusiveStep(value, max);
                 }
 
                 void main() {
 
                     float v = 0.0;
 
+                    // compensate for lod (every lod scales down by a power of 2 in the x and y direction)
+                    int lodWindow = uWindow / int(pow(4.0, float(lod)));
+                    int lodOffset = uOffset / int(pow(4.0, float(lod))) ;
                     // mapping for sample range
-                    int bucketSize = uWindow / uWidth;
-                    int start = uOffset + int(floor(gl_FragCoord.x)) * bucketSize;
+                    int bucketSize = lodWindow / uWidth;
+                    int start = lodOffset + int(floor(gl_FragCoord.x)) * bucketSize;
 
                     // mapping for sample amplitude range
                     float stepSize = 2.0 / float(uHeight);
                     float min = vUv.y * 2.0 - 1.0;
                     float max = min + stepSize;
 
-                    // vec2 ccoord = vec2(float(start % uSampleWidth) / float(uSampleWidth), float(start / uSampleWidth) / float(uSampleHeight));
+                    int uTextureWidthLod = uTextureWidth / int(pow(2.0, float(lod))); // compensate for lod
 
                     for (int i = 0; i < bucketSize; i += 1) {
                         int pos = start + i;
-                        ivec2 coord = ivec2(pos % uSampleWidth, pos / uSampleWidth);
-                        float value = texelFetch(uTexture, coord, 0).r;
-                        // todo: instead check if pos.x is between value cur and prev
-                        v +=  interStep(min, max, value) / float(bucketSize) *20.0;
+                        ivec2 coord = ivec2(pos % uTextureWidthLod, pos / uTextureWidthLod);
+                        ivec2 prevCoord = ivec2((pos - 1) % uTextureWidthLod, (pos - 1) / uTextureWidthLod);
+                        float cur = texelFetch(uTexture, coord, lod).r;
+                        float prev = texelFetch(uTexture, prevCoord, lod).r;
+                        // uv is either, on pixel, or between prev and curr on y-axis
+                        v +=  (interStep(min, max, cur) + interStep(prev, cur, min + 0.5 * stepSize) + interStep(cur, prev, min + 0.5 * stepSize)) / float(bucketSize) *8.0;
                     }
 
                     outColor = vec4(vec3(v), 1.);
@@ -196,16 +205,6 @@
                 2 * 4,
             );
 
-            // const numSamples = 2048;
-            // const cycles = 10; // number of cycles
-            // const frequency = 0.2 * Math.PI * cycles; // total angle for the specified number of cycles
-
-            // // Create and Bind Texture
-            // const samples = new Float32Array(numSamples);
-            // for (let i = 0; i < numSamples; i++) {
-            //     samples[i] = Math.sin((i * frequency) / numSamples);
-            // }
-
             const audioCtx = new window.AudioContext();
             // load audio file ./audio.mp3
             const resp = await fetch("https://archive.org/download/daft-punk-homework/A2.%20WDPK%2083.7%20FM.mp3");
@@ -213,53 +212,77 @@
             const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
             const channelData = audioBuffer.getChannelData(0);
 
-            const numSamples = channelData.length;
 
-            const textureWidth = gl.getParameter(gl.MAX_TEXTURE_SIZE);
-            const textureHeight = Math.ceil(numSamples / textureWidth);
-
-            const sampleBufferSize = textureWidth * textureHeight;
-            const samples = new Float32Array(sampleBufferSize); // texture needs to be filled with data
-
-            for (let i = 0; i < sampleBufferSize; i++) {
-                samples[i] = channelData[i] ?? 0;
+            function nextPowerOf2(x) {
+                if (x < 1) return 1;
+                return Math.pow(2, Math.ceil(Math.log2(x)));
             }
 
-            // DOWNSAMPLING ALGO THAT DOESN'T WORK TOO WELL RN
+            function getTextureDimensions (size) {
+                const textureWidth = gl.getParameter(Math.min(gl.MAX_TEXTURE_SIZE, size));
+                const textureHeight = Math.ceil(size / textureWidth);
+                
 
-            // for (let i = 0; i < numSamples; i += 2) {
-            //     const stepSize = 1 / numSamples;
+                return [ textureWidth, nextPowerOf2(textureHeight) ];
+            }
 
-            //     const bucketStart = Math.round(
-            //         i * stepSize * channelData.length,
-            //     );
-            //     const bucketEnd = Math.round(
-            //         (i + 1) * stepSize * channelData.length,
-            //     );
-            //     const slice = channelData.slice(bucketStart, bucketEnd);
+            function generateMipmap (data, lvl = 0) {
+                const f = 2 ** lvl;
 
-            //     const max = Math.max(...slice);
-            //     const min = Math.min(...slice);
+                const dataAmount = data.length;
 
-            //     samples[i] = max;
-            //     samples[i + 1] = min;
-            // }
+                const [ w, h ] = getTextureDimensions(dataAmount);
+                const width = w / f;
+                const height = h / f;
+                const size = width * height;
+
+                const samples = new Float32Array(size);
+                
+                for (let i = 0; i < size; i += 2) {
+                    const stepSize = f**2;
+
+                    const bucketStart = i * stepSize
+                    const bucketEnd = (i + 1) * stepSize
+                    const slice = data.slice(bucketStart, bucketEnd);
+
+                    const max = Math.max(...slice);
+                    const min = Math.min(...slice);
+
+                    // no samples we return 0
+                    samples[i] = max === -Infinity ? 0 : max;
+                    samples[i + 1] = min === Infinity ? 0 : min;
+                }
+
+                // texImage2D call sig
+                return [
+                    gl.TEXTURE_2D,
+                    lvl,
+                    gl.R16F,
+                    width,
+                    height,
+                    0,
+                    gl.RED,
+                    gl.FLOAT,
+                    samples
+                ]
+            }
+
+            const [ textureWidth ] = getTextureDimensions(channelData.length); // to set  as uniform
 
             const texture = gl.createTexture();
             gl.bindTexture(gl.TEXTURE_2D, texture);
-            gl.texImage2D(
-                gl.TEXTURE_2D,
-                0,
-                gl.R16F,
-                textureWidth,
-                textureHeight,
-                0,
-                gl.RED,
-                gl.FLOAT,
-                samples,
-            );
-            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+            gl.texImage2D(...generateMipmap(channelData, 0));
+            gl.texImage2D(...generateMipmap(channelData, 1));
+            gl.texImage2D(...generateMipmap(channelData, 2));
+            gl.texImage2D(...generateMipmap(channelData, 3));
+
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
 
             // Set Uniforms
             const textureLocation = gl.getUniformLocation(program, "u_texture");
@@ -267,25 +290,20 @@
 
             // Get uniform locations for window and samples
             const windowLocation = gl.getUniformLocation(program, "uWindow");
-            const sampleWidthLocation = gl.getUniformLocation(
-                program,
-                "uSampleWidth",
-            );
-            const sampleHeightLocation = gl.getUniformLocation(
-                program,
-                "uSampleHeight",
-            );
+            const lodLocation = gl.getUniformLocation(program, "lod");
+            const textureWidthLocation = gl.getUniformLocation(program, "uTextureWidth");
             const offsetLocation = gl.getUniformLocation(program, "uOffset");
 
             const widthLocation = gl.getUniformLocation(program, "uWidth");
             const heightLocation = gl.getUniformLocation(program, "uHeight");
 
             let sampleWindow = 1024; // Render half of the array at a time
-            let offset = 256;
+            let lod = 0;
+            let offset = 0;
             gl.uniform1i(windowLocation, sampleWindow);
-            gl.uniform1i(sampleWidthLocation, textureWidth);
-            gl.uniform1i(sampleHeightLocation, textureHeight);
-            gl.uniform1i(offsetLocation, 256);
+            gl.uniform1i(lodLocation, lod);
+            gl.uniform1i(textureWidthLocation, textureWidth);
+            gl.uniform1i(offsetLocation, offset);
 
             gl.uniform1i(widthLocation, canvas.width);
             gl.uniform1i(heightLocation, canvas.height);
@@ -304,6 +322,7 @@
                 }
                 gl.uniform1i(offsetLocation, offset);
                 gl.uniform1i(windowLocation, sampleWindow);
+                gl.uniform1i(lodLocation, lod)
 
                 gl.uniform1i(widthLocation, canvas.width);
                 gl.uniform1i(heightLocation, canvas.height);
@@ -333,6 +352,12 @@
                 settingsForm.elements["window"].value = sampleWindow;
 
                 offset += e.deltaX * sampleWindow / 1024;
+
+                // hacky way to set LOD
+                if (sampleWindow < 100_000) lod = 0;
+                else if (sampleWindow < 1_000_000) lod = 1;
+                else if (sampleWindow < 10_000_000) lod = 2;
+                else lod = 3;
             });
 
             // Start the animation
