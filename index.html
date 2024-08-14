@@ -17,7 +17,7 @@
         </style>
     </head>
     <body>
-        <canvas id="webgl-canvas"></canvas>
+        <canvas id="webgl-canvas" width="512px" height="200px"></canvas>
         <form id="settings">
             <label>
                 Window Size
@@ -31,8 +31,16 @@
             /** @type {WebGL2RenderingContext} */
             const gl = canvas.getContext("webgl2");
 
-            canvas.width = 512;
-            canvas.height = 200;
+            const width = canvas.clientWidth;
+            const height = canvas.clientHeight;
+            const devicePixelRatio = window.devicePixelRatio || 1;
+
+            canvas.width = canvas.clientWidth * devicePixelRatio;
+            canvas.height = canvas.clientHeight * devicePixelRatio;
+            canvas.style.width = width + 'px';
+            canvas.style.height = height + 'px';
+            
+            gl.viewport(0, 0, canvas.width, canvas.height);
 
             // Vertex Shader Source
             const vertexShaderSource = `#version 300 es
