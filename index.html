@@ -326,6 +326,15 @@
                 sampleWindow = parseInt(e.target.window.value);
             });
 
+            canvas.addEventListener("wheel", (e) => {
+                e.preventDefault();
+
+                sampleWindow = Math.max(sampleWindow + e.deltaY * 1024, 1024);
+                settingsForm.elements["window"].value = sampleWindow;
+
+                offset += e.deltaX * sampleWindow / 1024;
+            });
+
             // Start the animation
             animate();
         </script>
