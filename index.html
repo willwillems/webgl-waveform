@@ -40,7 +40,15 @@
             canvas.style.width = width + 'px';
             canvas.style.height = height + 'px';
             
-            gl.viewport(0, 0, canvas.width, canvas.height);
+
+            let viewportWidth = canvas.width;
+            let viewportHeight = canvas.height;
+            function setViewport () {
+                viewportWidth = canvas.width;
+                viewportHeight = canvas.height;
+                gl.viewport(0, 0, viewportWidth, viewportHeight);
+            }
+            setViewport()
 
             // Vertex Shader Source
             const vertexShaderSource = `#version 300 es
@@ -332,8 +340,8 @@
             gl.uniform1i(textureWidthLocation, textureWidth);
             gl.uniform1i(offsetLocation, offset);
 
-            gl.uniform1i(widthLocation, canvas.width);
-            gl.uniform1i(heightLocation, canvas.height);
+            gl.uniform1i(widthLocation, viewportWidth);
+            gl.uniform1i(heightLocation, viewportHeight);
 
             // Bind Texture Unit
             gl.activeTexture(gl.TEXTURE0);
@@ -355,7 +363,7 @@
                 gl.uniform1i(heightLocation, canvas.height);
 
                 // Set Viewport and Draw
-                gl.viewport(0, 0, canvas.width, canvas.height);
+                setViewport();
                 gl.clearColor(0, 0, 0, 1);
                 gl.clear(gl.COLOR_BUFFER_BIT);
                 gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -375,10 +383,16 @@
             canvas.addEventListener("wheel", (e) => {
                 e.preventDefault();
 
-                sampleWindow = Math.max(sampleWindow + e.deltaY * 1024, 1024);
+                const step = e.deltaY * 1024
+                sampleWindow = Math.max(sampleWindow + step, 1024);
                 settingsForm.elements["window"].value = sampleWindow;
 
-                offset += e.deltaX * sampleWindow / 1024;
+                offset += e.deltaX * sampleWindow / viewportWidth;
+                if (step) {
+                    const rect = e.target.getBoundingClientRect();
+                    const x = (event.clientX - rect.left) / devicePixelRatio;
+                    offset -= 4 * step * (x / viewportWidth); // no idea where that 4 comes from it just works
+                }
 
                 // hacky way to set LOD
                 if (sampleWindow < 10_000) lod = 0;
