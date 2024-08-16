@@ -98,13 +98,14 @@
                     int lodWindow = uWindow / int(pow(4.0, float(lod)));
                     int lodOffset = uOffset / int(pow(4.0, float(lod))) ;
                     // mapping for sample range
-                    int bucketSize = lodWindow / uWidth;
-                    int start = lodOffset + int(floor(gl_FragCoord.x)) * bucketSize;
+                    int bucketSize = lodWindow / uWidth; // this could cause some artifacts
+                    int start = lodOffset + int(floor(gl_FragCoord.x)) * bucketSize; // gl_FragCoord.x is the pixel position .5
 
                     // mapping for sample amplitude range
                     float stepSize = 2.0 / float(uHeight);
-                    float min = vUv.y * 2.0 - 1.0;
-                    float max = min + stepSize;
+                    float min = vUv.y * 2.0 - 1.0; // start of a pixel 
+                    float mid = min + stepSize * 0.5; // middle of a pixel 
+                    float max = min + stepSize; // end of a pixel
 
                     int uTextureWidthLod = uTextureWidth / int(pow(2.0, float(lod))); // compensate for lod
 
@@ -115,7 +116,7 @@
                         float cur = texelFetch(uTexture, coord, lod).r;
                         float prev = texelFetch(uTexture, prevCoord, lod).r;
                         // uv is either, on pixel, or between prev and curr on y-axis
-                        v +=  (interStep(min, max, cur) + interStep(prev, cur, min + 0.5 * stepSize) + interStep(cur, prev, min + 0.5 * stepSize)) / float(bucketSize) *8.0;
+                        v +=  clamp(interStep(min, max, cur) + interStep(prev, cur, min + 0.5 * stepSize) + interStep(cur, prev, min + 0.5 * stepSize), 0.0, 1.0); // not dividing by bucket size here anymore
                     }
 
                     outColor = vec4(vec3(v), 1.);
@@ -219,39 +220,60 @@
             }
 
             function getTextureDimensions (size) {
-                const textureWidth = gl.getParameter(Math.min(gl.MAX_TEXTURE_SIZE, size));
+                const baseSize = nextPowerOf2(Math.sqrt(size));
+                const textureWidth = Math.min(gl.getParameter(gl.MAX_TEXTURE_SIZE), baseSize);
                 const textureHeight = Math.ceil(size / textureWidth);
-                
 
                 return [ textureWidth, nextPowerOf2(textureHeight) ];
             }
 
+            /**
+             * @param {Float32Array} data
+             * @param {number} lvl
+             */
             function generateMipmap (data, lvl = 0) {
                 const f = 2 ** lvl;
+                const f2 = 4 ** lvl;
 
                 const dataAmount = data.length;
 
                 const [ w, h ] = getTextureDimensions(dataAmount);
-                const width = w / f;
+                const width = w / f; // halves every step
                 const height = h / f;
                 const size = width * height;
 
+                console.time(`generateMipmap ${lvl}`);
                 const samples = new Float32Array(size);
-                
-                for (let i = 0; i < size; i += 2) {
-                    const stepSize = f**2;
+                for (let i = 0; i <= size; i += 2) {
+                    const stepSize = f2;
+
+                    if (lvl === 0) {
+                        samples[i] = data[i];
+                        samples[i+1] = data[i+1];
+                        continue 
+                    }
 
                     const bucketStart = i * stepSize
-                    const bucketEnd = (i + 1) * stepSize
+                    const bucketEnd = i * stepSize + 2* stepSize
                     const slice = data.slice(bucketStart, bucketEnd);
+
+                    if (slice.length === 0) {
+                        samples[i] = 0;
+                        samples[i + 1] = 0;
+                        continue;
+                    }
 
                     const max = Math.max(...slice);
                     const min = Math.min(...slice);
 
                     // no samples we return 0
-                    samples[i] = max === -Infinity ? 0 : max;
-                    samples[i + 1] = min === Infinity ? 0 : min;
+                    const start = slice[0] ?? 0;
+                    const end = slice[slice.length - 1] ?? 0;
+
+                    samples[i] = (start <= end ? min : max);
+                    samples[i + 1] = (start <= end ? max : min);
                 }
+                console.timeEnd(`generateMipmap ${lvl}`);
 
                 // texImage2D call sig
                 return [
