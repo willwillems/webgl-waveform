@@ -245,8 +245,8 @@
                     const stepSize = f;
 
                     if (lvl === 0) {
-                        samples[i] = data[i];
-                        samples[i+1] = data[i+1];
+                        samples[i] = data[i] / 1.4;
+                        samples[i+1] = data[i+1] / 1.4;
                         continue 
                     }
 
@@ -260,8 +260,8 @@
                         continue;
                     }
 
-                    const max = Math.max(...slice);
-                    const min = Math.min(...slice);
+                    const max = Math.max(...slice) / 1.4;
+                    const min = Math.min(...slice) / 1.4;
 
                     // no samples we return 0
                     const start = slice[0] ?? 0;
@@ -332,7 +332,7 @@
             const widthLocation = gl.getUniformLocation(program, "uWidth");
             const heightLocation = gl.getUniformLocation(program, "uHeight");
 
-            let sampleWindow = 1024; // Render half of the array at a time
+            let sampleWindow = viewportWidth; // start with 1 sample per pixel
             let lod = 0;
             let offset = 0;
             gl.uniform1i(windowLocation, sampleWindow);
@@ -383,8 +383,9 @@
             canvas.addEventListener("wheel", (e) => {
                 e.preventDefault();
 
-                const step = e.deltaY * 1024
-                sampleWindow = Math.max(sampleWindow + step, 1024);
+                const stepSize = viewportWidth
+                const step = e.deltaY * stepSize
+                sampleWindow = Math.max(sampleWindow + step, stepSize);
                 settingsForm.elements["window"].value = sampleWindow;
 
                 offset += e.deltaX * sampleWindow / viewportWidth;
