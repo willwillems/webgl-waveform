@@ -96,25 +96,56 @@
                     int lodWindow = uWindow / int(pow(2.0, float(lod)));
                     int lodOffset = uOffset / int(pow(2.0, float(lod))) ;
                     // mapping for sample range
-                    int bucketSize = lodWindow / uWidth; // this could cause some artifacts
-                    int start = lodOffset + int(floor(gl_FragCoord.x)) * bucketSize; // gl_FragCoord.x is the pixel position .5
+                    // int bucketSize = lodWindow / uWidth; // this could cause some artifacts
+                    // int start = lodOffset + int(floor(gl_FragCoord.x)) * bucketSize; // gl_FragCoord.x is the pixel position .5
 
                     // mapping for sample amplitude range
                     float stepSize = 2.0 / float(uHeight);
-                    float min = vUv.y * 2.0 - 1.0; // start of a pixel 
-                    float mid = min + stepSize * 0.5; // middle of a pixel 
-                    float max = min + stepSize; // end of a pixel
+                    float pxlfloor = gl_FragCoord.y - 0.5; // start of a pixel
+                    float pxlmiddle = gl_FragCoord.y;
+                    float pxlroof = gl_FragCoord.y + 0.5; // end of a pixel
 
                     int uTextureWidthLod = uTextureWidth / int(pow(1.0, float(lod))); // compensate for lod
 
-                    for (int i = 0; i < bucketSize; i += 1) {
-                        int pos = start + i;
+                    float vmax = 0.0;
+                    float vmin = 0.0;
+
+                    float pos = float(lodOffset) + vUv.x * float(lodWindow);
+
+                    for (int i = 0; i < 1; i += 1) {
+                        int posp = int(ceil(pos)); // NOT NECESSARY PREV JUST FOR TESTING
+                        int pos = int(floor(pos));
                         ivec3 coord = ivec3(pos % uTextureWidthLod, pos / uTextureWidthLod, lod);
-                        ivec3 prevCoord = ivec3((pos - 1) % uTextureWidthLod, (pos - 1) / uTextureWidthLod, lod);
-                        float cur = texelFetch(uTextureArray, coord, 0).r;
-                        float prev = texelFetch(uTextureArray, prevCoord, 0).r;
+                        ivec3 prevCoord = ivec3((posp) % uTextureWidthLod, (posp) / uTextureWidthLod, lod);
+                        // ivec3 nextCoord = ivec3((pos + 1) % uTextureWidthLod, (pos + 1) / uTextureWidthLod, lod);
+                        // float cur = texelFetch(uTextureArray, coord, 0).r;
+                        // float prev = texelFetch(uTextureArray, prevCoord, 0).r;
+
+                        float min = 0.5*(1.0+texelFetch(uTextureArray, coord, 0).r);
+                        float max = 0.5*(1.0+texelFetch(uTextureArray, coord, 0).g);
+                        float minprev = 0.5*(1.0+texelFetch(uTextureArray, prevCoord, 0).r);
+                        float maxprev = 0.5*(1.0+texelFetch(uTextureArray, prevCoord, 0).g);
+                        // float minnext = 0.5*(1.0+texelFetch(uTextureArray, nextCoord, 0).r);
+                        // float maxnext = 0.5*(1.0+texelFetch(uTextureArray, nextCoord, 0).g);
+
+                        float minpx = min * float(uHeight) - 0.5;
+                        float maxpx = max * float(uHeight) + 0.5;
+                        float minpxprev = minprev * float(uHeight) - 0.5;
+                        float maxpxprev = maxprev * float(uHeight) + 0.5;
+                        // float minpxnext = minnext * float(uHeight) - 0.5;
+                        // float maxpxnext = maxnext * float(uHeight) + 0.5;
                         // uv is either, on pixel, or between prev and curr on y-axis
-                        v +=  clamp(interStep(min, max, cur) + interStep(prev, cur, min + 0.5 * stepSize) + interStep(cur, prev, min + 0.5 * stepSize), 0.0, 1.0); // not dividing by bucket size here anymore
+                        // v +=  clamp(interStep(min, max, pxlmiddle) + interStep(min, max, pxlmiddle), 0.0, 1.0); // not dividing by bucket size here anymore
+                        
+                        float xf = 1.0 - abs(clamp((vUv.y - min) / (max - min) - 0.5, -0.5, 0.5));
+                        float xfpi = 1.0 - abs(clamp((vUv.y - minprev) / (maxprev - minprev) - 0.5, -0.5, 0.5));
+                        // float xfni = abs(clamp((vUv.y - minnext) / (maxnext - minnext) - 0.5, -0.5, 0.0));
+                        
+                        v += clamp(maxpx - pxlfloor, 0.0, 1.0) * clamp(pxlroof - minpx, 0.0, 1.0) * xf;
+                        v += clamp(maxpxprev - pxlfloor, 0.0, 1.0) * clamp(pxlroof - minpxprev, 0.0, 1.0) * xfpi;
+                        // v += clamp(maxpxnext - pxlfloor, 0.0, 1.0) * clamp(pxlroof - minpxnext, 0.0, 1.0) * xfni;
+                        // vmax = interStep(pxlroof, pxlfloor, max) + interStep(pxlfloor, pxlroof, max);
+                        // vmin = interStep(pxlroof, pxlfloor, min) + interStep(pxlfloor, pxlroof, min);
                     }
 
                     outColor = vec4(vec3(v), 1.);
@@ -241,36 +272,41 @@
 
                 console.time(`generateMipmap ${lvl}`);
                 const samples = new Float32Array(size);
-                for (let i = 0; i <= dataTarget; i += 2) {
+                for (let i = 0; i <= dataTarget; i += 1) {
                     const stepSize = f;
 
+                    const r = 2*i
+                    const g = 2*i + 1
+
                     if (lvl === 0) {
-                        samples[i] = data[i] / 1.4;
-                        samples[i+1] = data[i+1] / 1.4;
+                        samples[r] = data[i] <= data[i+1] ? data[i] / 1.4 : data[i+1] / 1.4;
+                        samples[g] = data[i] <= data[i+1] ? data[i+1] / 1.4 : data[i] / 1.4;
                         continue 
                     }
 
-                    const bucketStart = i * stepSize
-                    const bucketEnd = i * stepSize + 2 * stepSize
+                    const bucketStart = i * stepSize - 1 // todo check if -1 better indeed (include last of previous)
+                    const bucketEnd = i * stepSize + 2 * stepSize + 1
                     const slice = data.slice(bucketStart, bucketEnd);
 
                     if (slice.length === 0) {
-                        samples[i] = 0;
-                        samples[i + 1] = 0;
+                        samples[r] = 0;
+                        samples[g] = 0;
                         continue;
                     }
 
-                    const max = Math.max(...slice) / 1.4;
                     const min = Math.min(...slice) / 1.4;
+                    const max = Math.max(...slice) / 1.4;
 
-                    // no samples we return 0
-                    const start = slice[0] ?? 0;
-                    const end = slice[slice.length - 1] ?? 0;
+                    // // no samples we return 0
+                    // const start = slice[0] ?? 0;
+                    // const end = slice[slice.length - 1] ?? 0;
 
-                    samples[i] = (start <= end ? min : max);
-                    samples[i + 1] = (start <= end ? max : min);
+                    samples[r] = min;
+                    samples[g] = max;
                 }
                 console.timeEnd(`generateMipmap ${lvl}`);
+
+                console.log(samples.slice(100_000, 101_024))
 
                 return [
                     gl.TEXTURE_2D_ARRAY,
@@ -279,7 +315,7 @@
                     width,
                     height,
                     1,
-                    gl.RED,
+                    gl.RG,
                     gl.FLOAT,
                     samples
                 ]
@@ -290,19 +326,19 @@
             const texture = gl.createTexture();
             gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
 
-            const layers = 6;   // Number of 2D textures in the array
-            const size = textureHeight*textureWidth*layers
+            const layers = 12;   // Number of 2D textures in the array
+            const size = textureHeight*textureWidth*layers*2 // 2 channels per texture (RG)
 
             // setup texture
             gl.texImage3D(
                 gl.TEXTURE_2D_ARRAY,
                 0,                 // Level of detail (0 is the base level)
-                gl.R32F,           // Internal format
+                gl.RG32F,           // Internal format
                 textureWidth,             // Width of each layer
                 textureHeight,            // Height of each layer
                 layers,            // Number of layers
                 0,                 // Border (must be 0)
-                gl.RED,           // Format of the texel data
+                gl.RG,           // Format of the texel data
                 gl.FLOAT,  // Data type of the texel data
                 new Float32Array(size)               // Data (null here because we're just allocating space)
             );
@@ -384,7 +420,7 @@
                 e.preventDefault();
 
                 const stepSize = viewportWidth
-                const step = e.deltaY * stepSize
+                const step = e.deltaY * Math.floor(sampleWindow / 100)
                 sampleWindow = Math.max(sampleWindow + step, stepSize);
                 settingsForm.elements["window"].value = sampleWindow;
 
@@ -396,12 +432,18 @@
                 }
 
                 // hacky way to set LOD
-                if (sampleWindow < 10_000) lod = 0;
-                else if (sampleWindow < 80_000) lod = 1;
-                else if (sampleWindow < 360_000) lod = 2;
-                else if (sampleWindow < 2_880_000) lod = 3;
-                else if (sampleWindow < 10_000_000) lod = 4;
-                else lod = 5;
+                if (sampleWindow < (1024* 2.0** 1)) lod = 0;
+                else if (sampleWindow < 1024* 2.0** 2) lod = 1;
+                else if (sampleWindow < 1024* 2.0** 3) lod = 2;
+                else if (sampleWindow < 1024* 2.0** 4) lod = 3;
+                else if (sampleWindow < 1024* 2.0** 5) lod = 4;
+                else if (sampleWindow < 1024* 2.0** 6) lod = 5;
+                else if (sampleWindow < 1024* 2.0** 7) lod = 6;
+                else if (sampleWindow < 1024* 2.0** 8) lod = 7;
+                else if (sampleWindow < 1024* 2.0** 9) lod = 8;
+                else if (sampleWindow < 1024* 2.0** 10) lod = 9;
+                else if (sampleWindow < 1024* 2.0** 11) lod = 10;
+                else lod = 11;
             });
 
             // Start the animation
