@@ -30,6 +30,7 @@
             <input type="number" id="lod" disabled />
         </label>
         <script type="module">
+            import { RFFT } from './modules/main.js'
             /** @type {HTMLCanvasElement} */
             const canvas = document.getElementById("webgl-canvas");
             /** @type {WebGL2RenderingContext} */
@@ -73,7 +74,7 @@
                 out vec4 outColor;
 
                 uniform mediump sampler2DArray uTextureArray; // this is the float 32 texture array we're passing in
-
+                uniform mediump sampler2D uColorTexture; // Add this to the fragment shader
                 // Below units are in samples count, can be in other units (like pixels) as well
                 uniform int uWindow; // this is the sample window size we're rendering
                 uniform int lod; // synthetic lod
@@ -117,6 +118,10 @@
                     int lodOffset = uOffset / int(pow(2.0, float(lod))) ;
 
                     return ((2.0 * px - 1.0) * float(lodWindow) / float(uWidth)) + float(lodOffset); // 0.5 is debatable
+                }
+                float toAbsoluteSampleSpace(float px) {
+
+                    return ((2.0 * px - 1.0) * float(uWindow) / float(uWidth)) + float(uOffset); // 0.5 is debatable
                 }
 
                 void main() {
@@ -174,9 +179,21 @@
                     }
 
                     // Apply gamma correction
-                    v = pow(v, 1.0 / 2.2); // todo: clamp v
+                    v = pow(v, 1.0 / 2.2);
 
-                    outColor = vec4(vec3(v), 1.);
+                    float as = toAbsoluteSampleSpace(x) / 442.0;
+                    float cdl = floor(as);
+                    float cdm = fract(as);
+                    float cdr = ceil(as);
+
+                    ivec2 coordl = ivec2(int(cdl) % uTextureWidth, int(cdr) / uTextureWidth);
+                    ivec2 coordr = ivec2(int(cdr) % uTextureWidth, int(cdr) / uTextureWidth);
+                    vec4 cl = texelFetch(uColorTexture, coordl, 0);
+                    vec4 cr = texelFetch(uColorTexture, coordr, 0);
+
+                    vec4 c = mix(cl, cr, cdm);
+
+                    outColor = vec4(clamp(v, 0.0, 1.0) * cl.rgb, 1.0);
 
                     outColor = (int(posl) <= lodCueSample && int(posr) >= lodCueSample) ? vec4(0.0, 1.0, 1.0, 1.) : outColor;
                     outColor = (int(posl) <= lodActiveSample && int(posr) >= lodActiveSample) ? vec4(1.0, 0.0, 0.0, 1.) : outColor;
@@ -269,9 +286,12 @@
             const audioCtx = new window.AudioContext();
             // load audio file ./audio.mp3
             const resp = await fetch("https://archive.org/download/daft-punk-homework/A2.%20WDPK%2083.7%20FM.mp3");
+
+            // const resp = await fetch("/audio.mp3");
             const arrayBuffer = await resp.arrayBuffer();
+            console.log(arrayBuffer)
             const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
-            const channelData = audioBuffer.getChannelData(0);
+            const channelData = audioBuffer.getChannelData(0).slice(0, 2000000);
 
             let activeSource = null;
             let startTime = 0;
@@ -432,6 +452,117 @@
 
             gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
             gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+
+const getPaddedSlice = (arr, start, length, padding = 2) => {
+    const leftTarget = start - padding * length
+    const rightTarget = start + (1 + padding) * length
+
+    const leftBound = Math.max(0, leftTarget)
+    const rightBound = Math.min(arr.length, rightTarget)
+
+    const leftPad = leftBound - leftTarget
+    const rightPad = rightTarget - rightBound
+
+
+    const extendedSlice = new Float32Array([
+        ...Array(leftPad).fill(0),
+        ...arr.slice(leftBound, rightBound),
+        ...Array(rightPad).fill(0),
+    ]);
+
+    return extendedSlice;
+}
+
+
+function computeMagnitudes(fftwResult, windowSize) {
+  const halfWindowSize = windowSize / 2;
+  const magnitudes = [];
+
+  // Calculate magnitudes for the first half of the FFT result
+  for (let i = 0; i < halfWindowSize/2; i++) {
+    const real = fftwResult[i * 2];
+    const imag = fftwResult[i * 2 + 1];
+    const magnitude = Math.sqrt(real * real + imag * imag);
+    magnitudes.push(magnitude);
+  }
+
+  return magnitudes;
+}
+
+            const colors = new Uint8Array(textureHeight*textureWidth*1*3)
+
+            // add 2 aditional windows to the left and right
+            const sampleSize = 442
+            const windowPadding = 2
+            const windowSize = sampleSize * (1 + 2*windowPadding)
+            var plan = new RFFT(windowSize)
+            console.time("fftr")
+            // var fftr = new KissFFT.FFTR(442*2);
+            let ij = 0;
+            for (var i = 0; i < channelData.length; i += sampleSize) {
+                const transform = plan.forward(getPaddedSlice(channelData, i, sampleSize, windowPadding));
+
+                const magnitudes = computeMagnitudes(transform, windowSize)
+
+                // •	Low Range (20 Hz to 250 Hz): 0 to 0.0125
+                // •	Mid Range (250 Hz to 4 kHz): 0.0125 to 0.2
+                // •	High Range (4 kHz to 20 kHz): 0.2 to 1
+
+                // // good values without the padding on left and right
+                // const lowS = 442/2 * 0.015
+                // const midS = 442/2 * 0.035
+
+                const lowS = sampleSize/2 * 0.05
+                const midS = sampleSize/2 * 0.25
+
+                const low = magnitudes.slice(0, lowS).reduce((acc, val) => acc + val, 0)
+                const mid = magnitudes.slice(lowS, midS).reduce((acc, val) => acc + val, 0)
+                const high = magnitudes.slice(midS).reduce((acc, val) => acc + val, 0)
+
+                const lowNormalised = low / Math.max(low, mid, high)
+                const midNormalised = mid / Math.max(low, mid, high)
+                const highNormalised = high / Math.max(low, mid, high)
+
+                // for (let j = i*3; j < (i*3 + sampleSize*2*3); j += 3) {
+                colors[ij++] = Math.round(lowNormalised * 255)
+                colors[ij++] = Math.round(midNormalised * 255)
+                colors[ij++] = Math.round(highNormalised * 255)
+                // }
+            }
+            plan.dispose();  // fftr is now no longer usable for FFTs
+            console.timeEnd("fftr")
+
+// Create a texture for the colors array
+const colorTexture = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, colorTexture);
+
+// Define the texture format
+gl.texImage2D(
+    gl.TEXTURE_2D,    // Target texture type
+    0,                // Level of detail (0 is the base level)
+    gl.RGB,           // Internal format (we're using RGB since colors have 3 components)
+    textureWidth,     // Width of the texture (same as your texture width)
+    Math.ceil(textureHeight/2),    // Height of the texture (same as your texture height)
+    0,                // Border (must be 0)
+    gl.RGB,           // Format of the texel data (matches the internal format)
+    gl.UNSIGNED_BYTE, // Data type of the texel data (for normalized colors)
+    colors            // The actual data (Int8Array for RGB)
+);
+
+// Set texture parameters
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+// Pass the texture to the shader
+const colorTextureLocation = gl.getUniformLocation(program, "uColorTexture");
+gl.uniform1i(colorTextureLocation, 1);
+
+// Bind the texture unit 1 (since 0 is used for the previous texture)
+gl.activeTexture(gl.TEXTURE1);
+gl.bindTexture(gl.TEXTURE_2D, colorTexture);
 
 
             // Set Uniforms
