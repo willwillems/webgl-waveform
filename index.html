@@ -306,7 +306,6 @@
                 // get current time, not of the context
                 startTime = performance.now();
                 activeSource = source;
-                console.log("Playing audio at sample", activeSource);
             }
             function stopAudio() {
                 if (activeSource) {
@@ -328,7 +327,7 @@
             // listen globally to keydown handlers
             window.addEventListener("keydown", (e) => {
                 if (e.repeat) return
-                console.log(e.key, e.repeat);
+
                 if (e.key === "q") {
                     playAudio(cuePosition);
                 }
@@ -555,7 +554,7 @@
                 const x = (event.clientX - rect.left) / devicePixelRatio;
                 const s = toSampleSpace(x);
                 cuePosition = Math.floor(s);
-                console.log("cuePosition", cuePosition);
+
                 gl.uniform1i(cueSampleLocation, cuePosition);
             });
 
