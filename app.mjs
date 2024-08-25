@@ -23,10 +23,9 @@ function setViewport () {
 setViewport()
 
 // Vertex Shader Source
-const vertexShaderSource = await fetch("vertex.glsl").then((res) => res.text())
+const vertexShaderSource = await fetch("/shaders/vertex.glsl").then((res) => res.text())
 // Fragment Shader Source
-const fragmentShaderSource = await fetch("fragment.glsl").then((res) => res.text())
-
+const fragmentShaderSource = await fetch("/shaders/fragment.glsl").then((res) => res.text())
 
 
 // Compile Shader Function
@@ -354,7 +353,7 @@ canvas.addEventListener("wheel", (e) => {
     offset += e.deltaX * sampleWindow / viewportWidth;
     if (step) {
         const rect = e.target.getBoundingClientRect();
-        const x = (event.clientX - rect.left) / devicePixelRatio;
+        const x = (e.clientX - rect.left) / devicePixelRatio;
         offset -= 8 * step * (x / viewportWidth); // no idea where that 4 comes from it just works (4*2)
     }
 
@@ -379,7 +378,7 @@ function toSampleSpace (px) {
 
 canvas.addEventListener("click", (e) => {
     const rect = e.target.getBoundingClientRect();
-    const x = (event.clientX - rect.left) / devicePixelRatio;
+    const x = (e.clientX - rect.left) / devicePixelRatio;
     const s = toSampleSpace(x);
     cuePosition = Math.floor(s);
 
