@@ -4,7 +4,7 @@ precision highp float;
 in vec2 vUv; // uv gets passsed along from the original buffer to the fragment shader
 out vec4 outColor;
 
-uniform mediump sampler2DArray uTextureArray; // this is the float 32 texture array we're passing in
+uniform mediump sampler2D uTexture; // this is the float 32 texture we're passing in
 
 // Below units are in samples count, can be in other units (like pixels) as well
 uniform int uWindow; // this is the sample window size we're rendering
@@ -18,13 +18,30 @@ uniform int uWidth; // this is the width of the canvas in px
 uniform int cueSample;
 uniform int activeSample; // playback position
 
+uniform int uLodBlockSize; // this is the size of the lod block
+
+uniform int[12] uVirtualTextureOffsets; // offsets for every lod lvl
+
 // Define line thickness
 float lineThickness = 1.0;
 
-vec4 texelFetch1D(mediump sampler2DArray textureArray, int textureWidth, int i, int l)
+vec2 texelFetch1D(mediump sampler2D texture, int i, int l)
 {
-    ivec3 coord = ivec3(i % textureWidth, i / textureWidth, l);
-    return texelFetch(textureArray, coord, 0);
+    // get the virtual texture offset for this lod
+    int virtualTextureOffset = uVirtualTextureOffsets[l];
+    // compensate the offset for the lod
+    int lodVirtualTextureOffset = virtualTextureOffset / int(pow(2.0, float(l)));
+    // get the offset to end up in the correct lod block
+    int lodLvlTextureOffset = uLodBlockSize * l;
+    // get the position in the virtual texture, local to the lod block
+    int virtualTexturePosition = i - lodVirtualTextureOffset;
+    // get the position in the virtual texture, global in the specific lod block
+    int lodLvlVirtualTexturePosition = lodLvlTextureOffset + virtualTexturePosition;
+
+    // using the global lod block position, we can calculate the texture coordinate
+    ivec2 coord = ivec2(lodLvlVirtualTexturePosition % uTextureWidth, lodLvlVirtualTexturePosition / uTextureWidth);
+    // check that we're not sampling outside the lod block and return the value
+    return (virtualTexturePosition >= 0 && virtualTexturePosition < uLodBlockSize) ? texelFetch(texture, coord, 0).rg : vec2(0.0);
 }
 
 float inclusiveStep(float edge, float x) {
@@ -82,7 +99,7 @@ void main() {
     for (float i = posl2; i < posr2; i += 1.0) {
         int sampleIndex = int(i); // floors i to get the sample index
 
-        vec4 val = texelFetch1D(uTextureArray, uTextureWidth, sampleIndex, lod);
+        vec2 val = texelFetch1D(uTexture, sampleIndex, lod);
 
         // calculate the pixel position of the sample
         float ax = toPixelSpace(float(i));

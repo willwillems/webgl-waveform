@@ -1,5 +1,7 @@
+//@ts-check
+
 /** @type {HTMLCanvasElement} */
-const canvas = document.getElementById("webgl-canvas");
+const canvas = /** @type {HTMLCanvasElement} */ (document.getElementById('webgl-canvas'));
 /** @type {WebGL2RenderingContext} */
 const gl = canvas.getContext("webgl2", { antialias: false });
 
@@ -12,8 +14,9 @@ canvas.height = canvas.clientHeight * devicePixelRatio;
 canvas.style.width = width + 'px';
 canvas.style.height = height + 'px';
 
-
+/** @param {number} viewportWidth current width of the viewport, compensating for devicePixelRatio */
 let viewportWidth = canvas.width;
+/** @param {number} viewportHeight current height of the viewport, compensating for devicePixelRatio */
 let viewportHeight = canvas.height;
 function setViewport () {
     viewportWidth = canvas.width;
@@ -116,7 +119,9 @@ const audioCtx = new window.AudioContext();
 const resp = await fetch("https://archive.org/download/daft-punk-homework/A2.%20WDPK%2083.7%20FM.mp3");
 const arrayBuffer = await resp.arrayBuffer();
 const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
-const channelData = audioBuffer.getChannelData(0);
+const channelData = audioBuffer.getChannelData(0).slice(0); // slice the buffer so it doesn't get detached after using it in the audio context, we keep the decoded audio data in memory indefinitely
+const sampleRate = audioBuffer.sampleRate;
+const channelDataSize = channelData.length;
 
 let activeSource = null;
 let startTime = 0;
@@ -148,6 +153,7 @@ function getActiveSample() {
     return startPosition;
 }
 
+/** @param {number} cuePosition position of CUE marker in samples from the beginning of the track */
 let cuePosition = 0;
 
 
@@ -166,42 +172,91 @@ window.addEventListener("keyup", (e) => {
 });
 
 
-function nextPowerOf2(x) {
-    if (x < 1) return 1;
-    return Math.pow(2, Math.ceil(Math.log2(x)));
+/** @param {number} textureWidth width of the data texture in texels */
+const textureWidth = gl.getParameter(gl.MAX_TEXTURE_SIZE) // usually no more than 8k
+// we can only replace the texture data in square blocks through textSubImage2D
+/** @param {number} lodBlockSize size of the block in samples/px */
+const lodBlockSize = (Math.ceil(viewportWidth / textureWidth) + 2) * textureWidth
+
+/** @param {number} lods synthetic levels of detail/zoom we're rendering */
+const lods = 12;
+/** @param {number} size size of the texture in texels */
+const size = lods*lodBlockSize
+/** @param {number} bufferSize size of the array buffer that contains the texture */
+const bufferSize = size * 2 // 2 channels per texture (RG)
+
+/** @param {number} textureHeight height of the data texture in texels */
+const textureHeight = Math.floor(size / textureWidth); // should not need flooring
+
+// console.log(`Texture size: ${size*4/(1024**2)} MB`)
+
+
+const texture = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, texture);
+
+// setup texture
+gl.texImage2D(
+    gl.TEXTURE_2D,
+    0,                      // Level of detail (0 is the base level)
+    gl.RG32F,               // Internal format
+    textureWidth,           // Width of each layer
+    textureHeight,          // Height of each layer
+    0,                      // Border (must be 0)
+    gl.RG,                  // Format of the texel data
+    gl.FLOAT,               // Data type of the texel data
+    new Float32Array(bufferSize)  // texels
+);
+
+
+function getXOffsetForLod (lod) {
+    return 0
 }
-
-function getTextureDimensions (size) {
-    const baseSize = nextPowerOf2(Math.sqrt(size));
-    const textureWidth = Math.min(gl.getParameter(gl.MAX_TEXTURE_SIZE), baseSize);
-    const textureHeight = Math.ceil(size / textureWidth);
-
-    return [ textureWidth, nextPowerOf2(textureHeight) ];
+function getYOffsetForLod (lod) {
+    return Math.floor(lodBlockSize / textureWidth) * lod
 }
-
 /**
- * @param {Float32Array} data
- * @param {number} lvl
- * @param {object} options
+ * Dynamically upload data to the texture (virtual texturing)
+ * @param {number} start target start sample
+ * @param {number} window target window sample
+ * @param {number} lod level of detail aka zoom level
  */
-function generateMipmap (data, lvl = 0, { size } = {}) {
-    const f = 2 ** lvl;
+function uploadData (start, window, lod) {
+    /** @param {number} f factor to scale the data down by */
+    const f = 2 ** lod;
 
-    const dataAmount = data.length;
+    const offsetX = getXOffsetForLod(lod)
+    const offsetY = getYOffsetForLod(lod)
 
-    const [ width, height ] = getTextureDimensions(dataAmount);
+    const lodBlockHeight = Math.floor(lodBlockSize / textureWidth)
 
-    const dataTarget = (data.length / f);
+    const fViewportWidth = viewportWidth * f
+    const fLodBlockSize = lodBlockSize * f
 
-    console.time(`generateMipmap ${lvl}`);
-    const samples = new Float32Array(size);
-    for (let i = 0; i <= dataTarget; i += 1) {
+    const offsetIndexStart = Math.max(
+        0,
+        (Math.round(start / fViewportWidth) * fViewportWidth) + .5 * fViewportWidth - .5 * fLodBlockSize
+    )
+    const offsetIndexEnd = Math.min(
+        offsetIndexStart + fLodBlockSize,
+        channelDataSize
+    )
+
+    const data = channelData.slice(offsetIndexStart, offsetIndexEnd);
+    virtualTextureOffset[lod] = offsetIndexStart
+
+    const dataTargetTexels = lodBlockSize
+    const dataTargetBuffer = dataTargetTexels * 2;
+
+
+    console.time(`generateMipmap ${lod} for range: ${offsetIndexStart}:${offsetIndexEnd}`);
+    const samples = new Float32Array(dataTargetBuffer);
+    for (let i = 0; i <= dataTargetTexels; i += 1) {
         const stepSize = f;
 
         const r = 2*i
         const g = 2*i + 1
 
-        if (lvl === 0) {
+        if (lod === 0) {
             samples[r] = data[i] / 1.4
             samples[g] = data[i+1] / 1.4
             continue
@@ -227,55 +282,32 @@ function generateMipmap (data, lvl = 0, { size } = {}) {
         samples[r] = data[bucketStart] <= data[bucketEnd] ? min / 1.4 : max / 1.4;
         samples[g] = data[bucketStart] <= data[bucketEnd] ? max / 1.4 : min / 1.4;
     }
-    console.timeEnd(`generateMipmap ${lvl}`);
+    console.timeEnd(`generateMipmap ${lod} for range: ${offsetIndexStart}:${offsetIndexEnd}`);
 
-    return [
-        gl.TEXTURE_2D_ARRAY,
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texSubImage2D(
+        gl.TEXTURE_2D,
         0,
-        0, 0, lvl,          // x, y offsets and the layer index (z offset)
-        width,
-        height,
-        1,
+        offsetX,
+        offsetY,
+        textureWidth,
+        lodBlockHeight,
         gl.RG,
         gl.FLOAT,
         samples
-    ]
+    )
+
+    renderedWindow[lod][0] = offsetIndexStart;
+    renderedWindow[lod][1] = offsetIndexEnd;
 }
 
-const [ textureWidth, textureHeight ] = getTextureDimensions(channelData.length); // to set  as uniform
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
 
-const texture = gl.createTexture();
-gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
-
-const layers = 12;   // Number of 2D textures in the array
-const size = textureHeight*textureWidth*layers*2 // 2 channels per texture (RG)
-
-console.log(`Texture size: ${size*4/(1024**3)} GB`)
-
-// setup texture
-gl.texImage3D(
-    gl.TEXTURE_2D_ARRAY,
-    0,                 // Level of detail (0 is the base level)
-    gl.RG32F,           // Internal format
-    textureWidth,             // Width of each layer
-    textureHeight,            // Height of each layer
-    layers,            // Number of layers
-    0,                 // Border (must be 0)
-    gl.RG,           // Format of the texel data
-    gl.FLOAT,  // Data type of the texel data
-    new Float32Array(size)               // Data (null here because we're just allocating space)
-);
-
-// generate synthetic mipmaps for all layers
-for (let lod = 0; lod <= layers; lod++) {
-    gl.texSubImage3D(...generateMipmap(channelData, lod, { size }));
-}
-
-gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-
-gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
 
 // Set Uniforms
@@ -294,9 +326,14 @@ const cueSampleLocation = gl.getUniformLocation(program, "cueSample");
 const widthLocation = gl.getUniformLocation(program, "uWidth");
 const heightLocation = gl.getUniformLocation(program, "uHeight");
 
+const lodBlockSizeLocation = gl.getUniformLocation(program, "uLodBlockSize");
+const virtualTextureOffsetLocation = gl.getUniformLocation(program, "uVirtualTextureOffsets");
+
 let sampleWindow = viewportWidth; // start with 1 sample per pixel
 let lod = 0;
 let offset = 0;
+let virtualTextureOffset = new Array(lods).fill(0);
+
 gl.uniform1i(windowLocation, sampleWindow);
 gl.uniform1i(lodLocation, lod);
 gl.uniform1i(textureWidthLocation, textureWidth);
@@ -308,20 +345,36 @@ gl.uniform1i(cueSampleLocation, cuePosition);
 gl.uniform1i(widthLocation, viewportWidth);
 gl.uniform1i(heightLocation, viewportHeight);
 
+gl.uniform1i(lodBlockSizeLocation, lodBlockSize);
+gl.uniform1iv(virtualTextureOffsetLocation, virtualTextureOffset);
+
 // Bind Texture Unit
 gl.activeTexture(gl.TEXTURE0);
-gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
+gl.bindTexture(gl.TEXTURE_2D, texture);
 
+const renderedWindow = new Array(lods).fill(0).map(() => new Array(2).fill(0));
+
+const offsetIndicator = /** @type {HTMLInputElement} */ (document.getElementById("offset"));
 
 function animate() {
+    if (Math.max(0, offset) < renderedWindow[lod][0] || Math.min(offset+(sampleWindow*2), channelDataSize) > renderedWindow[lod][1]) {
+        uploadData(offset, sampleWindow, lod);
+    }
+
     gl.uniform1i(offsetLocation, offset);
     gl.uniform1i(windowLocation, sampleWindow);
-    gl.uniform1i(lodLocation, lod)
+    gl.uniform1i(lodLocation, lod) // -
 
-    gl.uniform1i(widthLocation, canvas.width);
-    gl.uniform1i(heightLocation, canvas.height);
+    gl.uniform1i(widthLocation, canvas.width); // -
+    gl.uniform1i(heightLocation, canvas.height); // -
+
+    gl.uniform1i(lodBlockSizeLocation, lodBlockSize); // -
+    gl.uniform1iv(virtualTextureOffsetLocation, virtualTextureOffset); // -
 
     gl.uniform1i(playbackPositionLocation, getActiveSample());
+
+    offsetIndicator.value = String(offset);
+
 
     // Set Viewport and Draw
     setViewport();
@@ -332,44 +385,41 @@ function animate() {
     requestAnimationFrame(animate);
 }
 
-const settingsForm = document.getElementById("settings");
+const settingsForm = /** @type {HTMLFormElement} */ (document.getElementById("settings"));
 
 settingsForm.elements["window"].value = sampleWindow;
 
 settingsForm.addEventListener("submit", (e) => {
     e.preventDefault();
-    sampleWindow = parseInt(e.target.window.value);
+    sampleWindow = parseInt(e.target['window'].value);
 });
 
-const lodMeter = document.getElementById("lod");
+const lodMeter = /** @type {HTMLInputElement} */ (document.getElementById("lod"));
 canvas.addEventListener("wheel", (e) => {
     e.preventDefault();
+    if (!(e.currentTarget instanceof HTMLElement)) throw new Error("target is not HTMLElement")
 
-    const minSize = viewportWidth
-    const step = e.deltaY * Math.floor(sampleWindow / 100)
-    sampleWindow = Math.max(sampleWindow + step, minSize);
-    settingsForm.elements["window"].value = sampleWindow;
+    if (e.ctrlKey || e.metaKey) { // pinch zoom
+        const step = e.deltaY * Math.floor(sampleWindow / 20)
 
-    offset += e.deltaX * sampleWindow / viewportWidth;
-    if (step) {
-        const rect = e.target.getBoundingClientRect();
+        const minSize = viewportWidth
+        sampleWindow = Math.max(sampleWindow + step, minSize);
+        settingsForm.elements["window"].value = sampleWindow;
+
+        const rect = e.currentTarget.getBoundingClientRect();
         const x = (e.clientX - rect.left) / devicePixelRatio;
-        offset -= 8 * step * (x / viewportWidth); // no idea where that 4 comes from it just works (4*2)
+        offset -= Math.round(8 * step * (x / viewportWidth)); // no idea where that 4 comes from it just works (4*2)
+
+        // hacky way to set LOD
+        {
+            const pwr = Math.floor(Math.log2(sampleWindow / viewportWidth));
+            lod = Math.max(0, Math.min(lods - 1, pwr));
+            lodMeter.value = String(lod);
+        }
     }
 
-    // hacky way to set LOD
-    if (sampleWindow < (2048 * 2.0** 1)) lodMeter.value = lod = 0;
-    else if (sampleWindow < 2048 * 2.0** 2) lodMeter.value = lod = 1;
-    else if (sampleWindow < 2048 * 2.0** 3) lodMeter.value = lod = 2;
-    else if (sampleWindow < 2048 * 2.0** 4) lodMeter.value = lod = 3;
-    else if (sampleWindow < 2048 * 2.0** 5) lodMeter.value = lod = 4;
-    else if (sampleWindow < 2048 * 2.0** 6) lodMeter.value = lod = 5;
-    else if (sampleWindow < 2048 * 2.0** 7) lodMeter.value = lod = 6;
-    else if (sampleWindow < 2048 * 2.0** 8) lodMeter.value = lod = 7;
-    else if (sampleWindow < 2048 * 2.0** 9) lodMeter.value = lod = 8;
-    else if (sampleWindow < 2048 * 2.0** 10) lodMeter.value = lod = 9;
-    else if (sampleWindow < 2048 * 2.0** 11) lodMeter.value = lod = 10;
-    else lodMeter.value = lod = 11;
+    const step = e.deltaX * Math.floor(sampleWindow / 200)
+    offset += Math.round(step); // no idea where that 4 comes from it just works (4*2)
 });
 
 function toSampleSpace (px) {
@@ -377,7 +427,10 @@ function toSampleSpace (px) {
 }
 
 canvas.addEventListener("click", (e) => {
-    const rect = e.target.getBoundingClientRect();
+    e.preventDefault();
+    if (!(e.currentTarget instanceof HTMLElement)) throw new Error("target is not HTMLElement")
+
+    const rect = e.currentTarget.getBoundingClientRect();
     const x = (e.clientX - rect.left) / devicePixelRatio;
     const s = toSampleSpace(x);
     cuePosition = Math.floor(s);
