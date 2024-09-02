@@ -1,14 +1,13 @@
 // @ts-check
 /// <reference lib="webworker" />
 
-const FLOAT32_SIZE = 4;
 const TEXEL_CHANNELS = 2;
 
 onmessage = function(e) {
     const { offsetIndexStart, offsetIndexEnd, lod } = e.data;
     // buffers are transfered
-    const data = new Float32Array(e.data.data, offsetIndexStart * FLOAT32_SIZE, offsetIndexEnd - offsetIndexStart);
-    const texels = new Float32Array(e.data.texels);
+    const data = new Float32Array(e.data.data.buffer, offsetIndexStart * e.data.data.BYTES_PER_ELEMENT, offsetIndexEnd - offsetIndexStart);
+    const texels = new Float32Array(e.data.texels.buffer);
 
     /** @param {number} f factor to scale the data down by */
     const f = 2 ** lod;
