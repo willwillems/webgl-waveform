@@ -119,7 +119,7 @@ const audioCtx = new window.AudioContext();
 const resp = await fetch("https://archive.org/download/daft-punk-homework/A2.%20WDPK%2083.7%20FM.mp3");
 const arrayBuffer = await resp.arrayBuffer();
 const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
-const channelData = audioBuffer.getChannelData(0).slice(0); // slice the buffer so it doesn't get detached after using it in the audio context, we keep the decoded audio data in memory indefinitely
+let channelData = audioBuffer.getChannelData(0).slice(0); // slice the buffer so it doesn't get detached after using it in the audio context, we keep the decoded audio data in memory indefinitely
 const sampleRate = audioBuffer.sampleRate;
 const channelDataSize = channelData.length;
 
@@ -214,76 +214,25 @@ function getXOffsetForLod (lod) {
 function getYOffsetForLod (lod) {
     return Math.floor(lodBlockSize / textureWidth) * lod
 }
-/**
- * Dynamically upload data to the texture (virtual texturing)
- * @param {number} start target start sample
- * @param {number} window target window sample
- * @param {number} lod level of detail aka zoom level
- */
-function uploadData (start, window, lod) {
-    /** @param {number} f factor to scale the data down by */
-    const f = 2 ** lod;
 
-    const offsetX = getXOffsetForLod(lod)
-    const offsetY = getYOffsetForLod(lod)
+// Create a Web Worker
+const worker = new Worker('data.worker.js');
 
-    const lodBlockHeight = Math.floor(lodBlockSize / textureWidth)
+// Handle the result from Web Worker
+worker.addEventListener("message", (e) => {
+  channelData = new Float32Array(e.data.data.buffer)
+  const texels = new Float32Array(e.data.texels.buffer)
+  const offsetIndexStart = e.data.offsetIndexStart;
+  const offsetIndexEnd = e.data.offsetIndexEnd;
+  const lod = e.data.lod;
 
-    const fViewportWidth = viewportWidth * f
-    const fLodBlockSize = lodBlockSize * f
-
-    const offsetIndexStart = Math.max(
-        0,
-        (Math.round(start / fViewportWidth) * fViewportWidth) + .5 * fViewportWidth - .5 * fLodBlockSize
-    )
-    const offsetIndexEnd = Math.min(
-        offsetIndexStart + fLodBlockSize,
-        channelDataSize
-    )
-
-    const data = channelData.slice(offsetIndexStart, offsetIndexEnd);
-    virtualTextureOffset[lod] = offsetIndexStart
-
-    const dataTargetTexels = lodBlockSize
-    const dataTargetBuffer = dataTargetTexels * 2;
+  console.timeEnd(`generateMipmap ${lod} for range: ${offsetIndexStart}:${offsetIndexEnd}`);
 
 
-    console.time(`generateMipmap ${lod} for range: ${offsetIndexStart}:${offsetIndexEnd}`);
-    const samples = new Float32Array(dataTargetBuffer);
-    for (let i = 0; i <= dataTargetTexels; i += 1) {
-        const stepSize = f;
+  const offsetX = getXOffsetForLod(lod);
+  const offsetY = getYOffsetForLod(lod);
 
-        const r = 2*i
-        const g = 2*i + 1
-
-        if (lod === 0) {
-            samples[r] = data[i] / 1.4
-            samples[g] = data[i+1] / 1.4
-            continue
-        }
-
-        // todo is -1 on first index
-        const bucketStart = i * stepSize -1 // todo check if -1 better indeed (include last of previous)
-        const bucketEnd = i * stepSize + 2 * stepSize + 1
-
-        if (data[bucketStart] === undefined && bucketStart > 0) {
-            break;
-        }
-
-        let min = data[bucketStart] ?? 0
-        let max = data[bucketStart] ?? 0
-        for (let j = bucketStart; j <= bucketEnd; j += 1) {
-            const v = data[j];
-
-            min = v < min ? v : min;
-            max = v > max ? v : max;
-        }
-
-        samples[r] = data[bucketStart] <= data[bucketEnd] ? min / 1.4 : max / 1.4;
-        samples[g] = data[bucketStart] <= data[bucketEnd] ? max / 1.4 : min / 1.4;
-    }
-    console.timeEnd(`generateMipmap ${lod} for range: ${offsetIndexStart}:${offsetIndexEnd}`);
-
+  const lodBlockHeight = Math.floor(lodBlockSize / textureWidth);
 
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, texture);
@@ -296,11 +245,48 @@ function uploadData (start, window, lod) {
         lodBlockHeight,
         gl.RG,
         gl.FLOAT,
-        samples
-    )
+        texels
+    );
+
+    virtualTextureOffset[lod] = offsetIndexStart;
 
     renderedWindow[lod][0] = offsetIndexStart;
     renderedWindow[lod][1] = offsetIndexEnd;
+});
+
+// Modify the uploadData function
+function uploadData(start, window, lod) {
+    /** @param {number} f factor to scale the data down by */
+    const f = 2 ** lod;
+
+    const fViewportWidth = viewportWidth * f;
+    const fLodBlockSize = lodBlockSize * f;
+
+    const offsetIndexStart = Math.max(
+        0,
+        (Math.round(start / fViewportWidth) * fViewportWidth) + .5 * fViewportWidth - .5 * fLodBlockSize
+    );
+    const offsetIndexEnd = Math.min(
+        offsetIndexStart + fLodBlockSize,
+        channelDataSize
+    );
+
+    const dataTargetTexels = lodBlockSize
+    const dataTargetBuffer = dataTargetTexels * 2;
+
+    const texels = new Float32Array(dataTargetBuffer);
+
+    if (channelData.byteLength === 0) return console.log("NOT READY");
+    console.time(`generateMipmap ${lod} for range: ${offsetIndexStart}:${offsetIndexEnd}`);
+
+    // Send data to Web Worker without SharedArrayBuffer
+    worker.postMessage({
+        data: channelData,
+        texels,
+        offsetIndexStart,
+        offsetIndexEnd,
+        lod
+    }, [channelData.buffer, texels.buffer]);
 }
 
 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
