@@ -5,6 +5,7 @@ in vec2 vUv; // uv gets passsed along from the original buffer to the fragment s
 out vec4 outColor;
 
 uniform mediump sampler2D uTexture; // this is the float 32 texture we're passing in
+uniform mediump sampler2D uColorTexture;
 
 // Below units are in samples count, can be in other units (like pixels) as well
 uniform int uWindow; // this is the sample window size we're rendering
@@ -58,6 +59,10 @@ float toPixelSpace(float s) {
     int lodOffset = uOffset / int(pow(2.0, float(lod)));
 
     return (s - float(lodOffset)) * float(uWidth) / (2.0 * float(lodWindow));
+}
+
+float toAbsoluteSampleSpace(float px) {
+    return ((2.0 * px - 1.0) * float(uWindow) / float(uWidth)) + float(uOffset); // 0.5 is debatable
 }
 
 float toSampleSpace(float px) {
@@ -137,6 +142,22 @@ void main() {
     v = pow(clamp(v, 0.0, 1.0), 1.0 / 2.2);
 
     outColor = vec4(vec3(v), 1.0);
+
+    ////////////////////////////
+    float as = toAbsoluteSampleSpace(x) / 442.0;
+    float cdl = floor(as);
+    float cdm = fract(as);
+    float cdr = ceil(as);
+
+    ivec2 coordl = ivec2(int(cdl) % uTextureWidth, int(cdr) / uTextureWidth);
+    ivec2 coordr = ivec2(int(cdr) % uTextureWidth, int(cdr) / uTextureWidth);
+    vec4 cl = texelFetch(uColorTexture, coordl, 0);
+    vec4 cr = texelFetch(uColorTexture, coordr, 0);
+
+    vec4 c = mix(cl, cr, cdm);
+
+    outColor = vec4(clamp(v, 0.0, 1.0) * cl.rgb, 1.0);
+    ////////////////////////////
 
     outColor = (int(posl) <= lodCueSample && int(posr) >= lodCueSample) ? vec4(0.0, 1.0, 1.0, 1.) : outColor;
     outColor = (int(posl) <= lodActiveSample && int(posr) >= lodActiveSample) ? vec4(1.0, 0.0, 0.0, 1.) : outColor;

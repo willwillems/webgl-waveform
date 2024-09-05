@@ -216,7 +216,60 @@ function getYOffsetForLod (lod) {
 }
 
 // Create a Web Worker
-const worker = new Worker('data.worker.js');
+const worker = new Worker('data.worker.js', { type: 'module' });
+// Create a Web Worker
+const cworker = new Worker('color.worker.js', { type: 'module' });
+
+const requiredColorTexelDataSize = Math.ceil(channelDataSize/422)
+// we need to create a square texture that can fit all the color texels
+const colorTextureWidth = Math.min(gl.getParameter(gl.MAX_TEXTURE_SIZE), requiredColorTexelDataSize);
+const colorTextureHeight = Math.ceil(requiredColorTexelDataSize/textureWidth);
+const colorTexelDataSize = textureWidth * textureHeight;
+const colorBufferSize = colorTexelDataSize * 3 // 3 channels per texture (RGB)
+// these will often not all be filled with data since we have the extra space to make the texture square
+let colors = new Uint8Array(colorBufferSize)
+cworker.addEventListener("message", (e) => {
+  console.log("heuwidhwqu",e.data)
+    // assign data back to the buffers
+    channelData = new Float32Array(e.data.data.buffer)
+    colors = new Uint8Array(e.data.colors.buffer)
+
+    ////////////////////////////
+
+    // Create a texture for the colors array
+    const colorTexture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, colorTexture);
+
+    // Define the texture format
+    gl.texImage2D(
+        gl.TEXTURE_2D,    // Target texture type
+        0,                // Level of detail (0 is the base level)
+        gl.RGB,           // Internal format (we're using RGB since colors have 3 components)
+        colorTextureWidth,     // Width of the texture (same as your texture width)
+        colorTextureHeight,    // Height of the texture (same as your texture height)
+        0,                // Border (must be 0)
+        gl.RGB,           // Format of the texel data (matches the internal format)
+        gl.UNSIGNED_BYTE, // Data type of the texel data (for normalized colors)
+        colors            // The actual data (Int8Array for RGB)
+    );
+
+    // Set texture parameters
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+    // Pass the texture to the shader
+    const colorTextureLocation = gl.getUniformLocation(program, "uColorTexture");
+    gl.uniform1i(colorTextureLocation, 1);
+
+    // Bind the texture unit 1 (since 0 is used for the previous texture)
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, colorTexture);
+
+    ////////////////////////////
+})
+console.log(cworker.postMessage({data: channelData, colors}, [channelData.buffer, colors.buffer]))
 
 // Handle the result from Web Worker
 worker.addEventListener("message", (e) => {
