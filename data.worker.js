@@ -6,7 +6,7 @@ const TEXEL_CHANNELS = 2;
 onmessage = function(e) {
     const { offsetIndexStart, offsetIndexEnd, lod } = e.data;
     // buffers are transfered
-    const data = new Float32Array(e.data.data.buffer, offsetIndexStart * e.data.data.BYTES_PER_ELEMENT, offsetIndexEnd - offsetIndexStart);
+    const data = new Float32Array(e.data.data, offsetIndexStart * e.data.data.BYTES_PER_ELEMENT, offsetIndexEnd - offsetIndexStart);
     const texels = new Float32Array(e.data.texels.buffer);
 
     /** @param {number} f factor to scale the data down by */
@@ -47,5 +47,5 @@ onmessage = function(e) {
         texels[g] = data[bucketStart] <= data[bucketEnd] ? max / 1.4 : min / 1.4;
     }
 
-    self.postMessage({ data, texels, offsetIndexStart, offsetIndexEnd, lod }, [data.buffer, texels.buffer]);
+    self.postMessage({ data, texels, offsetIndexStart, offsetIndexEnd, lod }, [texels.buffer]);
 };

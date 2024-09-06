@@ -50,7 +50,7 @@ const windowSize = sampleSize * (1 + 2 * windowPadding)
 onmessage = function(e) {
     const { } = e.data;
     // buffers are transfered
-    const data = new Float32Array(e.data.data.buffer);
+    const data = new Float32Array(e.data.data);
     const colors = new Uint8Array(e.data.colors.buffer);
 
     var plan = new RFFT(windowSize)
@@ -87,5 +87,5 @@ onmessage = function(e) {
     }
     plan.dispose();  // fftr is now no longer usable for FFTs
 
-    self.postMessage({ data, colors }, [data.buffer, colors.buffer]);
+    self.postMessage({ data, colors }, [colors.buffer]);
 };

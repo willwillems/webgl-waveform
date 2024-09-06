@@ -119,7 +119,10 @@ const audioCtx = new window.AudioContext();
 const resp = await fetch("https://archive.org/download/daft-punk-homework/A2.%20WDPK%2083.7%20FM.mp3");
 const arrayBuffer = await resp.arrayBuffer();
 const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
-let channelData = audioBuffer.getChannelData(0).slice(0); // slice the buffer so it doesn't get detached after using it in the audio context, we keep the decoded audio data in memory indefinitely
+const _channelData = audioBuffer.getChannelData(0)
+const channelDataBuffer = new SharedArrayBuffer(_channelData.BYTES_PER_ELEMENT * _channelData.length); // slice the buffer so it doesn't get detached after using it in the audio context, we keep the decoded audio data in memory indefinitely
+const channelData = new Float32Array(channelDataBuffer)
+channelData.set(_channelData)
 const sampleRate = audioBuffer.sampleRate;
 const channelDataSize = channelData.length;
 
@@ -231,7 +234,6 @@ let colors = new Uint8Array(colorBufferSize)
 cworker.addEventListener("message", (e) => {
   console.log("heuwidhwqu",e.data)
     // assign data back to the buffers
-    channelData = new Float32Array(e.data.data.buffer)
     colors = new Uint8Array(e.data.colors.buffer)
 
     ////////////////////////////
@@ -269,11 +271,10 @@ cworker.addEventListener("message", (e) => {
 
     ////////////////////////////
 })
-console.log(cworker.postMessage({data: channelData, colors}, [channelData.buffer, colors.buffer]))
+cworker.postMessage({data: channelDataBuffer, colors}, [colors.buffer])
 
 // Handle the result from Web Worker
 worker.addEventListener("message", (e) => {
-  channelData = new Float32Array(e.data.data.buffer)
   const texels = new Float32Array(e.data.texels.buffer)
   const offsetIndexStart = e.data.offsetIndexStart;
   const offsetIndexEnd = e.data.offsetIndexEnd;
@@ -305,8 +306,11 @@ worker.addEventListener("message", (e) => {
 
     renderedWindow[lod][0] = offsetIndexStart;
     renderedWindow[lod][1] = offsetIndexEnd;
+
+    uploading.delete(`${lod}:${offsetIndexStart}:${offsetIndexEnd}`);
 });
 
+const uploading = new Set();
 // Modify the uploadData function
 function uploadData(start, window, lod) {
     /** @param {number} f factor to scale the data down by */
@@ -324,6 +328,8 @@ function uploadData(start, window, lod) {
         channelDataSize
     );
 
+    if (uploading.has(`${lod}:${offsetIndexStart}:${offsetIndexEnd}`)) return;
+
     const dataTargetTexels = lodBlockSize
     const dataTargetBuffer = dataTargetTexels * 2;
 
@@ -332,14 +338,15 @@ function uploadData(start, window, lod) {
     if (channelData.byteLength === 0) return console.log("NOT READY");
     console.time(`generateMipmap ${lod} for range: ${offsetIndexStart}:${offsetIndexEnd}`);
 
+    uploading.add(`${lod}:${offsetIndexStart}:${offsetIndexEnd}`);
     // Send data to Web Worker without SharedArrayBuffer
     worker.postMessage({
-        data: channelData,
+        data: channelDataBuffer,
         texels,
         offsetIndexStart,
         offsetIndexEnd,
         lod
-    }, [channelData.buffer, texels.buffer]);
+    }, [texels.buffer]);
 }
 
 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
